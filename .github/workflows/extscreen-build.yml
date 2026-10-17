@@ -86,8 +86,8 @@ jobs:
               || echo "  skip: $(basename $f)"
           done
           # 断言：关键补丁恰好应用一次（防重复声明导致编译失败）
-          CNT=$(grep -c "computeToPlainTextV2" "$FLUTTER_ROOT/packages/flutter/lib/src/painting/text_span.dart" || true)
-          if [ "$CNT" != "1" ]; then echo "❌ text_span.dart computeToPlainTextV2 出现 $CNT 次（应为 1），SDK 补丁异常"; exit 1; fi
+          CNT=$(grep -c "void computeToPlainTextV2(" "$FLUTTER_ROOT/packages/flutter/lib/src/painting/text_span.dart" || true)
+          if [ "$CNT" != "1" ]; then echo "❌ text_span.dart computeToPlainTextV2 声明出现 $CNT 次（应为 1，字符串引用不算），SDK 补丁异常"; exit 1; fi
           flutter pub get >/dev/null
           MUI_DIR=$(ls -d "$PUB_CACHE"/hosted/pub.dev/material_ui-* | tail -1)
           echo "material_ui: $MUI_DIR"
