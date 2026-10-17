@@ -8,6 +8,8 @@ on:
         description: '官方 tag（留空=用最新 release；填了则强制按此 tag 构建）'
         required: false
         default: ''
+  repository_dispatch:   # 供外部 API 触发（POST /dispatches, event_type=build）
+    types: [build]
   schedule:
     - cron: '30 22 * * *' # 每日 UTC 22:30（北京时间 06:30）检查官方新版本
 
@@ -26,11 +28,13 @@ jobs:
         run: |
           LATEST=$(curl -s https://api.github.com/repos/bggRGjQaUbCoE/PiliPlus/releases/latest | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))")
           LAST=$(cat extscreen/last-tag 2>/dev/null || echo "none")
-          TAG="${{ github.event.inputs.tag }}"
+          ORIG="${{ github.event.inputs.tag }}"
+          [ -z "$ORIG" ] && ORIG="${{ github.event.client_payload.tag }}"
+          TAG="$ORIG"
           [ -z "$TAG" ] && TAG="$LATEST"
           echo "官方最新: $LATEST | 上次构建: $LAST | 本次: $TAG"
           if [ -z "$TAG" ]; then echo "获取官方版本失败"; exit 1; fi
-          if [ "${{ github.event.inputs.tag }}" = "" ] && [ "$TAG" = "$LAST" ]; then
+          if [ -z "$ORIG" ] && [ "$TAG" = "$LAST" ]; then
             echo "无新版本，跳过"; echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
