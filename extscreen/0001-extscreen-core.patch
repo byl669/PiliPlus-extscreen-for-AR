@@ -535,16 +535,17 @@ index a9bae79b5..78018a316 100644
                    dense: true,
                    onTap: () {
 diff --git a/lib/utils/update.dart b/lib/utils/update.dart
-index 772963116..f6b72814a 100644
+index 772963116..62ded7434 100644
 --- a/lib/utils/update.dart
 +++ b/lib/utils/update.dart
-@@ -1,4 +1,4 @@
+@@ -1,4 +1,5 @@
 -import 'dart:io' show Platform;
++import 'dart:convert' show jsonDecode;
 +import 'dart:io' show File, Platform;
  
  import 'package:PiliPlus/build_config.dart';
  import 'package:PiliPlus/common/constants.dart';
-@@ -9,17 +9,25 @@ import 'package:PiliPlus/utils/accounts/account.dart';
+@@ -9,17 +10,25 @@ import 'package:PiliPlus/utils/accounts/account.dart';
  import 'package:PiliPlus/utils/page_utils.dart';
  import 'package:PiliPlus/utils/storage.dart';
  import 'package:PiliPlus/utils/storage_key.dart';
@@ -570,72 +571,99 @@ index 772963116..f6b72814a 100644
      try {
        final res = await Request().get(
          Api.latestApp,
-@@ -115,7 +123,136 @@ abstract final class Update {
+@@ -115,7 +124,187 @@ abstract final class Update {
      }
    }
  
 -  // 下载适用于当前系统的安装包
 +  // ===== 以下为外接屏定制版（Android）应用内更新 =====
 +
++  // 更新清单镜像源（依次尝试）：raw.githubusercontent 国内直连常不可达，
++  // jsDelivr CDN 直接可达且响应为 application/json（内容与仓库 main 分支同源）
++  static const List<String> _extUpdateMirrors = [
++    'https://raw.githubusercontent.com/byl669/PiliPlus-extscreen-for-AR/main/extscreen/updates.json',
++    'https://cdn.jsdelivr.net/gh/byl669/PiliPlus-extscreen-for-AR@main/extscreen/updates.json',
++    'https://fastly.jsdelivr.net/gh/byl669/PiliPlus-extscreen-for-AR@main/extscreen/updates.json',
++  ];
++
++  /// 依次尝试各镜像拉取并解析更新清单；全部失败返回 null。
++  /// 注意：Request().get 会把网络错误包装成 {'message': ...} 的非空 Map 返回，
++  /// 因此不能以"是否为 Map"判定成功，必须校验 versionCode 字段。
++  static Future<Map<String, dynamic>?> _fetchExtUpdateManifest() async {
++    for (final url in _extUpdateMirrors) {
++      try {
++        final res = await Request().get(
++          url,
++          options: Options(
++            extra: {'account': const NoAccount()},
++            // 无论镜像返回 application/json 还是 text/plain，统一拿纯文本再自行解析
++            responseType: ResponseType.plain,
++          ),
++        );
++        dynamic data = res.data;
++        if (data is String && data.isNotEmpty) {
++          data = jsonDecode(data);
++        }
++        if (data is Map && data['versionCode'] is int) {
++          return Map<String, dynamic>.from(data);
++        }
++      } catch (_) {
++        continue; // 换下一个镜像
++      }
++    }
++    return null;
++  }
++
 +  static Future<void> _checkExtscreenUpdate(bool isAuto) async {
-+    try {
-+      final res = await Request().get(
-+        Api.extscreenUpdateUrl,
-+        options: Options(extra: {'account': const NoAccount()}),
-+      );
-+      if (res.data is! Map || (res.data as Map).isEmpty) {
-+        if (!isAuto) SmartDialog.showToast('检查更新失败，更新服务未返回数据');
-+        return;
-+      }
-+      final data = res.data as Map;
-+      final int latest = data['versionCode'] as int? ?? 0;
-+      if (latest <= BuildConfig.versionCode) {
-+        if (!isAuto) SmartDialog.showToast('已是最新版本');
-+        return;
-+      }
-+      SmartDialog.show(
-+        tag: 'ext_update',
-+        animationType: SmartAnimationType.centerFade_otherSlide,
-+        builder: (context) {
-+          final colorScheme = ColorScheme.of(context);
-+          return AlertDialog(
-+            title: const Text('🎉 发现新版本 '),
-+            content: SizedBox(
-+              width: 320,
-+              child: SingleChildScrollView(
-+                child: Column(
-+                  crossAxisAlignment: CrossAxisAlignment.start,
-+                  children: [
-+                    Text(
-+                      '${data['version']}',
-+                      style: const TextStyle(fontSize: 20),
-+                    ),
-+                    const SizedBox(height: 8),
-+                    Text('${data['notes'] ?? ''}'),
-+                  ],
-+                ),
++    final data = await _fetchExtUpdateManifest();
++    if (data == null) {
++      if (!isAuto) SmartDialog.showToast('检查更新失败，请检查网络后重试');
++      return;
++    }
++    final int latest = data['versionCode'] as int;
++    if (latest <= BuildConfig.versionCode) {
++      if (!isAuto) SmartDialog.showToast('已是最新版本');
++      return;
++    }
++    SmartDialog.show(
++      tag: 'ext_update',
++      animationType: SmartAnimationType.centerFade_otherSlide,
++      builder: (context) {
++        final colorScheme = ColorScheme.of(context);
++        return AlertDialog(
++          title: const Text('🎉 发现新版本 '),
++          content: SizedBox(
++            width: 320,
++            child: SingleChildScrollView(
++              child: Column(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  Text(
++                    '${data['version']}',
++                    style: const TextStyle(fontSize: 20),
++                  ),
++                  const SizedBox(height: 8),
++                  Text('${data['notes'] ?? ''}'),
++                ],
 +              ),
 +            ),
-+            actions: [
-+              TextButton(
-+                onPressed: SmartDialog.dismiss,
-+                child: Text(
-+                  '取消',
-+                  style: TextStyle(color: colorScheme.outline),
-+                ),
++          ),
++          actions: [
++            TextButton(
++              onPressed: SmartDialog.dismiss,
++              child: Text(
++                '取消',
++                style: TextStyle(color: colorScheme.outline),
 +              ),
-+              TextButton(
-+                onPressed: () => _downloadAndInstall(data),
-+                child: const Text('下载并安装'),
-+              ),
-+            ],
-+          );
-+        },
-+      );
-+    } catch (e) {
-+      if (kDebugMode) debugPrint('extscreen check update error: $e');
-+      if (!isAuto) SmartDialog.showToast('检查更新失败，请检查网络');
-+    }
++            ),
++            TextButton(
++              onPressed: () => _downloadAndInstall(data),
++              child: const Text('下载并安装'),
++            ),
++          ],
++        );
++      },
++    );
 +  }
 +
 +  static Future<void> _downloadAndInstall(Map data) async {
@@ -646,9 +674,7 @@ index 772963116..f6b72814a 100644
 +      builder: (context) => ValueListenableBuilder<double?>(
 +        valueListenable: progress,
 +        builder: (context, value, _) {
-+          final pct = value == null
-+              ? null
-+              : (value * 100).toStringAsFixed(1);
++          final pct = value == null ? null : (value * 100).toStringAsFixed(1);
 +          return AlertDialog(
 +            title: const Text('正在下载更新'),
 +            content: Column(
@@ -701,6 +727,32 @@ index 772963116..f6b72814a 100644
 +      if (apk != null && apk.existsSync()) apk.deleteSync();
 +      SmartDialog.showToast('更新失败: $e');
 +      if (kDebugMode) debugPrint('extscreen update error: $e');
++      // 下载失败兜底：提供浏览器手动下载入口（浏览器可走系统代理）
++      SmartDialog.show(
++        tag: 'ext_update_fail',
++        builder: (context) => AlertDialog(
++          title: const Text('应用内下载失败'),
++          content: const Text(
++            '可能是网络原因。可点击下方按钮用浏览器打开发布页手动下载安装包'
++            '（覆盖安装即可，无需卸载）。',
++          ),
++          actions: [
++            TextButton(
++              onPressed: SmartDialog.dismiss,
++              child: const Text('取消'),
++            ),
++            TextButton(
++              onPressed: () {
++                SmartDialog.dismiss(tag: 'ext_update_fail');
++                PageUtils.launchURL(
++                  'https://github.com/byl669/PiliPlus-extscreen-for-AR/releases/latest',
++                );
++              },
++              child: const Text('打开发布页'),
++            ),
++          ],
++        ),
++      );
 +    }
 +  }
 +

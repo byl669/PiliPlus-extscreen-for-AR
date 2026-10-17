@@ -216,6 +216,8 @@ jobs:
           git commit -m "CI: ${{ env.VER }} (官方 ${{ steps.check.outputs.tag }})"
           git pull --rebase --autostash || true
           git push
+          # 清理 jsDelivr CDN 缓存，保证镜像源分钟级拿到最新 updates.json
+          curl -s "https://purge.jsdelivr.net/gh/${{ github.repository }}@main/extscreen/updates.json" > /dev/null || true
 
       - name: 上传构建日志产物（调试用）
         if: steps.check.outputs.skip != 'true'
