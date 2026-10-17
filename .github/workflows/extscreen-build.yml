@@ -1,0 +1,195 @@
+name: extscreen-build
+
+# 外接屏版自动出包：跟随官方 PiliPlus 新版本，套补丁编译 arm64 APK 并发 Release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '官方 tag（留空=用最新 release；填了则强制按此 tag 构建）'
+        required: false
+        default: ''
+  schedule:
+    - cron: '30 22 * * *' # 每日 UTC 22:30（北京时间 06:30）检查官方新版本
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出本仓库（kit）
+        uses: actions/checkout@v4
+
+      - name: 判断是否需要构建
+        id: check
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/bggRGjQaUbCoE/PiliPlus/releases/latest | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))")
+          LAST=$(cat extscreen/last-tag 2>/dev/null || echo "none")
+          TAG="${{ github.event.inputs.tag }}"
+          [ -z "$TAG" ] && TAG="$LATEST"
+          echo "官方最新: $LATEST | 上次构建: $LAST | 本次: $TAG"
+          if [ -z "$TAG" ]; then echo "获取官方版本失败"; exit 1; fi
+          if [ "${{ github.event.inputs.tag }}" = "" ] && [ "$TAG" = "$LAST" ]; then
+            echo "无新版本，跳过"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: 检出官方源码
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: bggRGjQaUbCoE/PiliPlus
+          ref: ${{ steps.check.outputs.tag }}
+          path: src
+
+      - name: 套外接屏补丁 + 拷入新增文件 + 解包 vendored media_kit
+        if: steps.check.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -e
+          git apply --3way ../extscreen/0001-extscreen-core.patch || git apply ../extscreen/0001-extscreen-core.patch
+          cp -R ../extscreen/new-files/. .
+          mkdir -p third_party
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/extscreen/media_kit.tar.gz" -o /tmp/mk.tar.gz
+          echo "$(cat ../extscreen/media_kit.sha256)  /tmp/mk.tar.gz" | sha256sum -c -
+          tar -xz -C third_party -f /tmp/mk.tar.gz
+
+      - name: 安装 JDK 21
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: 安装 Flutter 3.47.7
+        if: steps.check.outputs.skip != 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+
+      - name: 应用官方 Flutter SDK / material_ui 补丁（幂等 forward）
+        if: steps.check.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -e
+          for f in lib/scripts/*.patch; do
+            (cd "$FLUTTER_ROOT" && patch -p1 --forward --fuzz=3 --no-backup-if-mismatch < "$OLDPWD/$f") \
+              || echo "  skip: $(basename $f)"
+          done
+          flutter pub get >/dev/null
+          MUI_DIR=$(ls -d "$PUB_CACHE"/hosted/pub.dev/material_ui-* | tail -1)
+          echo "material_ui: $MUI_DIR"
+          for f in lib/scripts/material/*.patch; do
+            (cd "$MUI_DIR" && patch -p1 --forward --fuzz=3 --no-backup-if-mismatch < "$OLDPWD/$f") \
+              || echo "  skip: $(basename $f)"
+          done
+
+      - name: 写版本号
+        if: steps.check.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -e
+          N=$(( $(cat ../extscreen/ext-counter) + 1 ))
+          CODE=$((5474 + N))
+          RAWTAG="${{ steps.check.outputs.tag }}"
+          CLEAN=${RAWTAG#v}
+          PUBVER=$(echo "$CLEAN" | python3 -c "import re,sys; m=re.match(r'^(\d+\.\d+\.\d+)(?:\.\d+)*', sys.stdin.read().strip()); print(m.group(1))")
+          VER="${PUBVER}-ext.${N}"
+          python3 - "$VER" "$CODE" "$RAWTAG" <<'PYEOF'
+          import json, sys, time
+          ver, code, tag = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+          data = {'pili.name': f'{tag}-ext.{code-5474}', 'pili.code': code,
+                  'pili.hash': 'CI', 'pili.time': int(time.time())}
+          open('pili_release.json','w').write(json.dumps(data, separators=(',',':')))
+          PYEOF
+          python3 - "$PUBVER" "$CODE" <<'PYEOF'
+          import re, sys
+          s = open('pubspec.yaml').read()
+          s = re.sub(r'(?m)^version: .*$', f'version: {sys.argv[1]}-CI+{sys.argv[2]}', s, count=1)
+          open('pubspec.yaml','w').write(s)
+          PYEOF
+          echo "N=$N" >> "$GITHUB_ENV"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          echo "CODE=$CODE" >> "$GITHUB_ENV"
+          echo "版本: $VER ($CODE)，pubspec: $PUBVER"
+
+      - name: 配置签名
+        if: steps.check.outputs.skip != 'true'
+        working-directory: src
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "❌ 未配置签名 Secrets（KEYSTORE_BASE64 等 4 个）"; exit 1; fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+          cat > android/key.properties <<EOF
+          storeFile=release.keystore
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      - name: 编译 arm64 release
+        if: steps.check.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          flutter pub get
+          flutter build apk --release --split-per-abi --target-platform android-arm64 \
+            --dart-define-from-file=pili_release.json
+
+      - name: 整理产物
+        if: steps.check.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          set -e
+          mkdir -p ../out
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "../out/PiliPlus-extscreen_arm64.apk"
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "../out/PiliPlus_${VER}_extscreen_arm64.apk"
+          SHA=$(sha256sum ../out/PiliPlus-extscreen_arm64.apk | cut -d' ' -f1)
+          cat > ../extscreen/updates.json <<EOF
+          {
+            "version": "$VER",
+            "versionCode": $CODE,
+            "url": "https://github.com/byl669/PiliPlus-extscreen-for-AR/releases/latest/download/PiliPlus-extscreen_arm64.apk",
+            "sha256": "$SHA",
+            "notes": "基于官方 ${{ steps.check.outputs.tag }} 自动追加外接显示器播放功能（CI 构建）"
+          }
+          EOF
+          echo "$N" > ../extscreen/ext-counter
+          echo "${{ steps.check.outputs.tag }}" > ../extscreen/last-tag
+
+      - name: 发布 Release + 回写版本记录
+        if: steps.check.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VER }}
+          name: ${{ env.VER }}（基于官方 ${{ steps.check.outputs.tag }}）
+          body: 自动构建。安装包：`PiliPlus-extscreen_arm64.apk`（应用内检查更新也用此文件）
+          files: |
+            out/PiliPlus-extscreen_arm64.apk
+            out/PiliPlus_${{ env.VER }}_extscreen_arm64.apk
+          fail_on_unmatched_files: true
+
+      - name: 提交版本记录（counter/last-tag/updates.json）
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add extscreen/ext-counter extscreen/last-tag extscreen/updates.json
+          git commit -m "CI: ${{ env.VER }} (官方 ${{ steps.check.outputs.tag }})"
+          git push
+
+      - name: 上传构建日志产物（调试用）
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ env.VER }}
+          path: out/
