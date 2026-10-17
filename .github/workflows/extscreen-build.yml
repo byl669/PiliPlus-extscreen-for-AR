@@ -105,7 +105,7 @@ jobs:
           done
           if [ -z "$MKV_DIR" ]; then echo "❌ pub cache 中未找到 media_kit_video 包"; exit 1; fi
           echo "media_kit_video: $MKV_DIR"
-          cd "$MKV_DIR"
+          cd "$(dirname "$MKV_DIR")"   # 补丁头为 media_kit_video/...，须在其父目录 -p1 应用
           if patch -p1 --forward --fuzz=3 --no-backup-if-mismatch < "$OLDPWD/lib/scripts/material/videoutput_engine_jni.patch" >/tmp/mkv.log 2>&1; then
             echo "  ok: videoutput_engine_jni（副屏帧上报走本引擎 FlutterJNI）"
           else
