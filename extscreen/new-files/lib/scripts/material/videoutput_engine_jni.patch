@@ -1,0 +1,144 @@
+diff --git a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java
+index de6eb446..05e29b16 100644
+--- a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java
++++ b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java
+@@ -28,6 +28,9 @@ import io.flutter.view.TextureRegistry;
+  */
+ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, ActivityAware {
+     public static Activity activity;
++    // 每个引擎独立实例：创建本插件实例的引擎（多引擎/副屏场景下
++    // VideoOutput 必须用自己引擎的 FlutterJNI 上报帧，否则帧通知会打到主引擎上）
++    private io.flutter.embedding.engine.FlutterEngine engineReference;
+     private MethodChannel channel;
+     private TextureRegistry textureRegistry;
+     private VideoOutputManager videoOutputManager;
+@@ -40,7 +43,7 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
+ 
+             if (videoOutputManager == null) {
+                 if (MediaKitVideoPlugin.activity != null && channel != null && textureRegistry != null) {
+-                    videoOutputManager = new VideoOutputManager(channel, textureRegistry);
++                    videoOutputManager = new VideoOutputManager(channel, textureRegistry, engineReference);
+                     lock.notifyAll();
+                 }
+             }
+@@ -54,7 +57,7 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
+ 
+             if (videoOutputManager == null) {
+                 if (MediaKitVideoPlugin.activity != null && channel != null && textureRegistry != null) {
+-                    videoOutputManager = new VideoOutputManager(channel, textureRegistry);
++                    videoOutputManager = new VideoOutputManager(channel, textureRegistry, engineReference);
+                     lock.notifyAll();
+                 }
+             }
+@@ -72,6 +75,7 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
+     @Override
+     public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
+         synchronized (lock) {
++            engineReference = flutterPluginBinding.getFlutterEngine();
+             channel = new MethodChannel(flutterPluginBinding.getBinaryMessenger(), "com.alexmercerind/media_kit_video");
+             textureRegistry = flutterPluginBinding.getTextureRegistry();
+ 
+@@ -79,7 +83,7 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
+ 
+             if (videoOutputManager == null) {
+                 if (MediaKitVideoPlugin.activity != null && channel != null && textureRegistry != null) {
+-                    videoOutputManager = new VideoOutputManager(channel, textureRegistry);
++                    videoOutputManager = new VideoOutputManager(channel, textureRegistry, engineReference);
+                     lock.notifyAll();
+                 }
+             }
+diff --git a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java
+index c5e28b3e..f49c991f 100644
+--- a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java
++++ b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java
+@@ -47,13 +47,18 @@ public class VideoOutput {
+     private long handle;
+     private MethodChannel channelReference;
+     private TextureRegistry textureRegistryReference;
++    // 创建本 VideoOutput 的引擎：副屏/多引擎场景下帧通知必须发给它，
++    // 而不能走原反射逻辑（只会从主 Activity 找到主引擎）
++    private final io.flutter.embedding.engine.FlutterEngine engineReference;
++    private FlutterJNI cachedJNI;
+ 
+     private final Object lock = new Object();
+ 
+-    VideoOutput(long handle, MethodChannel channelReference, TextureRegistry textureRegistryReference) {
++    VideoOutput(long handle, MethodChannel channelReference, TextureRegistry textureRegistryReference, io.flutter.embedding.engine.FlutterEngine engineReference) {
+         this.handle = handle;
+         this.channelReference = channelReference;
+         this.textureRegistryReference = textureRegistryReference;
++        this.engineReference = engineReference;
+         try {
+             flutterJNIAPIAvailable = false;
+             waitUntilFirstFrameRenderedNotify = false;
+@@ -94,9 +99,8 @@ public class VideoOutput {
+                                 Log.i("media_kit", String.format(Locale.ENGLISH, "VideoOutput.WaitUntilFirstFrameRenderedNotify = %d", handle));
+                             }
+ 
+-                            FlutterJNI flutterJNI = null;
+-                            while (flutterJNI == null) {
+-                                flutterJNI = getFlutterJNIReference();
++                            FlutterJNI flutterJNI = getFlutterJNIReference();
++                            if (flutterJNI != null) {
+                                 flutterJNI.markTextureFrameAvailable(id);
+                             }
+                         } catch (Throwable e) {
+@@ -116,9 +120,8 @@ public class VideoOutput {
+                                 Log.i("media_kit", String.format(Locale.ENGLISH, "VideoOutput.WaitUntilFirstFrameRenderedNotify = %d", handle));
+                             }
+ 
+-                            FlutterJNI flutterJNI = null;
+-                            while (flutterJNI == null) {
+-                                flutterJNI = getFlutterJNIReference();
++                            FlutterJNI flutterJNI = getFlutterJNIReference();
++                            if (flutterJNI != null) {
+                                 flutterJNI.markTextureFrameAvailable(id);
+                             }
+                         } catch (Throwable e) {
+@@ -219,6 +222,19 @@ public class VideoOutput {
+     }
+ 
+     private FlutterJNI getFlutterJNIReference() {
++        // 优先：直接用创建本 VideoOutput 的引擎（正确处理副屏/多引擎）
++        if (engineReference != null) {
++            try {
++                if (cachedJNI == null) {
++                    final Field field = engineReference.getClass().getDeclaredField("flutterJNI");
++                    field.setAccessible(true);
++                    cachedJNI = (FlutterJNI) field.get(engineReference);
++                }
++                return cachedJNI;
++            } catch (Throwable e) {
++                e.printStackTrace();
++            }
++        }
+         try {
+             FlutterView view = null;
+             // io.flutter.embedding.android.FlutterActivity
+diff --git a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java
+index 7799cfe8..171753de 100644
+--- a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java
++++ b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java
+@@ -20,18 +20,20 @@ public class VideoOutputManager {
+     private final HashMap<Long, VideoOutput> videoOutputs = new HashMap<>();
+     private final MethodChannel channelReference;
+     private final TextureRegistry textureRegistryReference;
++    private final io.flutter.embedding.engine.FlutterEngine engineReference;
+     private final Object lock = new Object();
+ 
+-    VideoOutputManager(MethodChannel channelReference, TextureRegistry textureRegistryReference) {
++    VideoOutputManager(MethodChannel channelReference, TextureRegistry textureRegistryReference, io.flutter.embedding.engine.FlutterEngine engineReference) {
+         this.channelReference = channelReference;
+         this.textureRegistryReference = textureRegistryReference;
++        this.engineReference = engineReference;
+     }
+ 
+     public VideoOutput create(long handle) {
+         synchronized (lock) {
+             Log.i("media_kit", String.format(Locale.ENGLISH, "com.alexmercerind.media_kit_video.VideoOutputManager.create: %d", handle));
+             if (!videoOutputs.containsKey(handle)) {
+-                final VideoOutput videoOutput = new VideoOutput(handle, channelReference, textureRegistryReference);
++                final VideoOutput videoOutput = new VideoOutput(handle, channelReference, textureRegistryReference, engineReference);
+                 videoOutputs.put(handle, videoOutput);
+             }
+             return videoOutputs.get(handle);

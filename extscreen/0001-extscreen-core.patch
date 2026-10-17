@@ -1,0 +1,740 @@
+diff --git a/android/app/build.gradle.kts b/android/app/build.gradle.kts
+index e3f25c4e1..ed76c54b7 100644
+--- a/android/app/build.gradle.kts
++++ b/android/app/build.gradle.kts
+@@ -28,11 +28,19 @@ android {
+     }
+ 
+     defaultConfig {
+-        applicationId = "com.example.piliplus"
++        applicationId = "com.example.piliplus.extscreen"
+         minSdk = flutter.minSdkVersion
+         targetSdk = 37
+         versionCode = flutter.versionCode
+-        versionName = flutter.versionName
++        // 外接屏版：pubspec 须为合法 semver（最多 3 段数字），显示名从 pili_release.json 的 pili.name 取
++        versionName = run {
++            val meta = rootProject.projectDir.parentFile.resolve("pili_release.json")
++            if (meta.exists()) {
++                try {
++                    (groovy.json.JsonSlurper().parse(meta) as Map<*, *>)["pili.name"] as? String
++                } catch (_: Exception) { null }
++            } else null
++        } ?: flutter.versionName
+     }
+ 
+     packagingOptions.jniLibs.useLegacyPackaging = true
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index 7fb416295..6f3fa5539 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -218,6 +218,16 @@
+                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+             </intent-filter>
+         </provider>
++        <!-- 外接屏定制版：向系统安装器授予下载的 APK 读权限 -->
++        <provider
++            android:name="androidx.core.content.FileProvider"
++            android:authorities="${applicationId}.updateProvider"
++            android:exported="false"
++            android:grantUriPermissions="true">
++            <meta-data
++                android:name="android.support.FILE_PROVIDER_PATHS"
++                android:resource="@xml/file_paths" />
++        </provider>
+         <service
+             android:name="com.ryanheise.audioservice.AudioService"
+             android:exported="true"
+@@ -261,6 +271,8 @@
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
++    <!-- 外接屏定制版：应用内更新需要拉起系统安装器 -->
++    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+     <!--
+       Media access permissions.
+       Android 13 or higher.
+diff --git a/android/app/src/main/kotlin/com/example/piliplus/MainActivity.kt b/android/app/src/main/kotlin/com/example/piliplus/MainActivity.kt
+index 170ed81c4..083d814df 100644
+--- a/android/app/src/main/kotlin/com/example/piliplus/MainActivity.kt
++++ b/android/app/src/main/kotlin/com/example/piliplus/MainActivity.kt
+@@ -16,12 +16,19 @@ class MainActivity : AudioServiceActivity() {
+ 
+     override fun onCreate(savedInstanceState: Bundle?) {
+         super.onCreate(savedInstanceState)
++        ExternalDisplayManager.attach(this, flutterEngine!!.dartExecutor.binaryMessenger)
++        UpdateInstaller.attach(flutterEngine!!.dartExecutor.binaryMessenger, this)
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+             window.attributes.layoutInDisplayCutoutMode =
+                 LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+         }
+     }
+ 
++    override fun onDestroy() {
++        ExternalDisplayManager.detach()
++        super.onDestroy()
++    }
++
+     override fun onUserLeaveHint() {
+         super.onUserLeaveHint()
+         AndroidHelper.ToDart.onUserLeaveHint?.run()
+diff --git a/android/app/src/main/res/values/string.xml b/android/app/src/main/res/values/string.xml
+index cf338c230..3ed3f9a43 100644
+--- a/android/app/src/main/res/values/string.xml
++++ b/android/app/src/main/res/values/string.xml
+@@ -1,5 +1,5 @@
+ <resources>
+-    <string name="app_name">PiliPlus</string>
++    <string name="app_name">PiliPlus·外接屏版</string>
+     <string name="search">搜索</string>
+     <string name="offline_video">离线视频</string>
+ </resources>
+\ No newline at end of file
+diff --git a/lib/common/widgets/text_more/paragraph_more.dart b/lib/common/widgets/text_more/paragraph_more.dart
+index 0ddfceb72..990fbf8d7 100644
+--- a/lib/common/widgets/text_more/paragraph_more.dart
++++ b/lib/common/widgets/text_more/paragraph_more.dart
+@@ -59,6 +59,18 @@ class RenderParagraphMore extends RenderParagraph {
+ 
+   bool didOverflowHeight = false;
+ 
++  /// 替代已移除的 RenderParagraph.textPainter.height：
++  /// 用相同参数重新排版取全文高度
++  double get _textHeight {
++    final tp = TextPainter(
++      text: text,
++      textDirection: textDirection,
++      textScaler: textScaler,
++      locale: locale,
++    )..layout(maxWidth: constraints.maxWidth);
++    return tp.height;
++  }
++
+   @override
+   set textScaler(TextScaler value) {
+     if (textPainter.textScaler == value) {
+@@ -116,7 +128,7 @@ class RenderParagraphMore extends RenderParagraph {
+     if (didOverflowHeight) {
+       _morePainter?.paint(
+         context.canvas,
+-        offset + Offset(0, textPainter.height),
++        offset + Offset(0, _textHeight),
+       );
+     }
+   }
+@@ -126,7 +138,7 @@ class RenderParagraphMore extends RenderParagraph {
+     if (_tapGestureRecognizer != null) {
+       if (_morePainter != null) {
+         if (position.dx < _morePainter!.width) {
+-          final height = textPainter.height;
++          final height = _textHeight;
+           if (position.dy > height &&
+               position.dy < height + _morePainter!.height) {
+             result.add(HitTestEntry(_morePainter!.text as TextSpan));
+diff --git a/lib/http/api.dart b/lib/http/api.dart
+index 789279a94..98f1d5c7d 100644
+--- a/lib/http/api.dart
++++ b/lib/http/api.dart
+@@ -412,6 +412,15 @@ abstract final class Api {
+   static const String latestApp =
+       'https://api.github.com/repos/bggRGjQaUbCoE/PiliPlus/releases';
+ 
++  // 外接屏定制版（Android）应用内更新清单。
++  // 编译时可用 --dart-define=EXT_UPDATES_URL=<url> 覆盖（自用 NAS 源）；
++  // 默认指向 fork 仓库的 updates.json（GitHub raw，公开仓库无隐私信息）
++  static const String extscreenUpdateUrl = String.fromEnvironment(
++    'EXT_UPDATES_URL',
++    defaultValue:
++        'https://raw.githubusercontent.com/byl669/PiliPlus-extscreen-for-AR/main/extscreen/updates.json',
++  );
++
+   // 多少人在看
+   // https://api.bilibili.com/x/player/online/total?aid=913663681&cid=1203559746&bvid=BV1MM4y1s7NZ&ts=56427838
+   static const String onlineTotal = '/x/player/online/total';
+diff --git a/lib/main.dart b/lib/main.dart
+index 971a979a9..4592bdc6b 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -1,6 +1,7 @@
+ import 'dart:io';
+ 
+ import 'package:PiliPlus/build_config.dart';
++import 'package:PiliPlus/pages/video/external_display/external_player_page.dart';
+ import 'package:PiliPlus/common/constants.dart';
+ import 'package:PiliPlus/common/widgets/back_detector.dart';
+ import 'package:PiliPlus/common/widgets/custom_toast.dart';
+@@ -44,6 +45,8 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
+ import 'package:get/get.dart';
+ import 'package:material_ui/material_ui.dart';
+ import 'package:media_kit/media_kit.dart';
++// ignore: implementation_imports
++import 'package:media_kit/src/player/native/core/initializer.dart';
+ import 'package:path/path.dart' as path;
+ import 'package:path_provider/path_provider.dart';
+ import 'package:screen_brightness_platform_interface/screen_brightness_platform_interface.dart';
+@@ -91,8 +94,28 @@ Future<void> _initAppPath() async {
+   appSupportDirPath = (await getApplicationSupportDirectory()).path;
+ }
+ 
++/// 外接显示器副屏入口（Android Presentation 独立 FlutterEngine）。
++/// 注意：DartEntrypoint 按名字查找时只会检索根库（main.dart），必须写在这里。
++@pragma('vm:entry-point')
++void externalDisplayMain() {
++  WidgetsFlutterBinding.ensureInitialized();
++  // 副屏是同一进程里的第二个 Dart isolate。media-kit 原生事件循环
++  // （libmedia_kit_native_event_loop.so）的 wakeup 端口是**进程级全局**的，
++  // 若副屏也走原生事件循环，就会覆盖主引擎注册的端口，使主播放器再也收不到
++  // 自己的 mpv 事件（命令永不返回 → dispose 时 mpv_terminate_destroy 永久阻塞 → ANR）。
++  // 因此副屏强制改用「每个 mpv 句柄独立 isolate」的事件循环，完全不碰全局状态。
++  // ignore: implementation_imports
++  Initializer.preferIsolateEventLoop = () => true;
++  MediaKit.ensureInitialized();
++  runApp(const ExternalPlayerApp());
++}
++
+ void main() async {
+   ScaledWidgetsFlutterBinding.ensureInitialized();
++  // 主引擎保持 media-kit 默认的「原生事件循环」（libmedia_kit_native_event_loop.so）。
++  // 注意：曾经尝试让主引擎也走 InitializerIsolate，结果主引擎播放直接失效
++  // （FILE_LOADED 后再无任何 mpv 事件、time-pos 恒为 0、画面一直停在上层遮罩），
++  // 因此主引擎必须用原生事件循环。副屏才需要 isolate 事件循环（见 externalDisplayMain）。
+   MediaKit.ensureInitialized();
+   await _initAppPath();
+   try {
+diff --git a/lib/pages/video/controller.dart b/lib/pages/video/controller.dart
+index ce61d5ebc..e3b021f84 100644
+--- a/lib/pages/video/controller.dart
++++ b/lib/pages/video/controller.dart
+@@ -39,6 +39,7 @@ import 'package:PiliPlus/pages/common/publish/publish_route.dart';
+ import 'package:PiliPlus/pages/search/widgets/search_text.dart';
+ import 'package:PiliPlus/pages/sponsor_block/block_mixin.dart';
+ import 'package:PiliPlus/pages/video/download_panel/view.dart';
++import 'package:PiliPlus/pages/video/external_display/service.dart';
+ import 'package:PiliPlus/pages/video/introduction/pgc/controller.dart';
+ import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
+ import 'package:PiliPlus/pages/video/medialist/view.dart';
+@@ -70,6 +71,7 @@ import 'package:dio/dio.dart' show Options;
+ import 'package:extended_nested_scroll_view/extended_nested_scroll_view.dart'
+     show ExtendedNestedScrollViewState;
+ import 'package:flutter/foundation.dart' show kDebugMode;
++import 'package:flutter/services.dart' show PlatformException;
+ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
+ import 'package:flutter_volume_controller/flutter_volume_controller.dart';
+ import 'package:get/get.dart';
+@@ -731,6 +733,21 @@ class VideoDetailController extends GetxController
+     Duration? seek = defaultST ?? playedTime;
+     if (seek == .zero) seek = null;
+     seek ??= getFirstSegment();
++
++    // 已存在外接屏投屏会话：无论是「同一页面切集/换画质」还是
++    // 「投屏中打开另一个视频页」，都统一由本页接管会话，把当前视频投到外接屏，
++    // 本机只作遥控器。
++    // 关键：此处绝不调用主屏 setDataSource —— PlPlayerController 是全局单例，
++    // 主屏播放器一旦起播就会与副屏会话争抢视频输出，导致两端黑屏（真机问题②根因）。
++    if (ExternalDisplayService.isConnected &&
++        !isFileSource &&
++        videoUrl != null &&
++        videoUrl!.isNotEmpty) {
++      _adoptExternalSession(seek);
++      defaultST = null;
++      return;
++    }
++
+     await plPlayerController.setDataSource(
+       isFileSource
+           ? FileSource(
+@@ -1250,7 +1267,218 @@ class VideoDetailController extends GetxController
+   }
+ 
+   @override
++  // ===== 外接显示器播放（本机作遥控器） =====
++  final RxBool isExternalMode = false.obs;
++  StreamSubscription<Map<String, dynamic>>? _extEventSub;
++  int _extLastPositionMs = 0;
++  /// 本机是否未为当前视频建立播放源（投屏直接接管的情形）。
++  /// 决定「回到本机播放」是重新拉流还是直接 seek+play。
++  bool _externalOnly = false;
++  /// 最近一次下发给副屏的视频源，用于抑制同一视频的重复下发
++  String? _extLoadedUrl;
++  /// backToLocal 重入保护（内部 await 期间可能被 dismissed 事件再次触发）
++  bool _backToLocalBusy = false;
++
++  /// 把当前视频切到外接显示器播放，本机进入遥控模式
++  Future<void> openOnExternalDisplay() async {
++    final url = videoUrl;
++    if (url == null || url.isEmpty) {
++      SmartDialog.showToast('视频地址未就绪，请稍后再试');
++      return;
++    }
++    final available = await ExternalDisplayService.isAvailable();
++    if (!available) {
++      SmartDialog.showToast('未检测到外接显示器，请先连接 HDMI 或投屏');
++      return;
++    }
++    // 与本地播放一致：DASH 音视频双流用 mpv edl 拼接
++    String video = url;
++    final audio = audioUrl;
++    if (audio != null &&
++        audio.isNotEmpty &&
++        !plPlayerController.onlyPlayAudio.value) {
++      video = 'edl://'
++          '!no_chapters;'
++          '%${video.length}%$video;'
++          '!new_stream;!no_chapters;'
++          '%${audio.length}%$audio';
++    }
++    try {
++      await ExternalDisplayService.connect();
++    } on PlatformException catch (e) {
++      SmartDialog.showToast('连接外接屏失败：${e.message ?? e.code}');
++      return;
++    }
++    _extLastPositionMs = plPlayerController.positionInMilliseconds;
++    _extEventSub?.cancel();
++    _extEventSub = ExternalDisplayService.events.listen(_onExternalEvent);
++    ExternalDisplayService.takeOwner(this, onRelease: _onSessionStolen);
++    _externalOnly = false;
++    _extLoadedUrl = video;
++    ExternalDisplayService.load({
++      'video': video,
++      'extras': {...plPlayerController.buffer},
++      'position': _extLastPositionMs,
++      'rate': plPlayerController.playbackSpeed,
++    });
++    ExternalDisplayService.startWatchdog();
++    // 收起键盘/输入焦点，防止残留焦点干扰遥控面板
++    FocusManager.instance.primaryFocus?.unfocus();
++    plPlayerController.pause();
++    isExternalMode.value = true;
++  }
++
++  /// 接管/沿用外接屏投屏会话：把当前视频投到外接屏，本机显示遥控面板。
++  /// 同时服务于「投屏中切视频/切集/换画质」与「投屏中打开另一个视频页」两条路径。
++  ///
++  /// 注意：本方法刻意不调用 plPlayerController.setDataSource，
++  /// 本机的该视频播放源由「回到本机播放」时再按需建立。
++  void _adoptExternalSession(Duration? seek) {
++    String video = videoUrl!;
++    final audio = audioUrl;
++    if (audio != null &&
++        audio.isNotEmpty &&
++        !plPlayerController.onlyPlayAudio.value) {
++      video = 'edl://'
++          '!no_chapters;'
++          '%${video.length}%$video;'
++          '!new_stream;!no_chapters;'
++          '%${audio.length}%$audio';
++    }
++    // 同一视频源的重复 init（如播放信息刷新）不重复下发，避免副屏无谓从头重播
++    if (isExternalMode.value &&
++        ExternalDisplayService.isOwner(this) &&
++        _extLoadedUrl == video) {
++      _extLastPositionMs = seek?.inMilliseconds ?? _extLastPositionMs;
++      return;
++    }
++    _extLoadedUrl = video;
++    // 成为唯一属主：旧属主（上一个视频页）会被静默通知退出投屏态，但连接保持
++    ExternalDisplayService.takeOwner(this, onRelease: _onSessionStolen);
++    _extEventSub?.cancel();
++    _extEventSub = ExternalDisplayService.events.listen(_onExternalEvent);
++    _extLastPositionMs = seek?.inMilliseconds ?? 0;
++    // 本机没有为该视频建立播放源，记录以便「回到本机播放」时重新拉流
++    _externalOnly = true;
++    isExternalMode.value = true;
++    videoState.value = true;
++    // 本机播放器保持暂停，不占用视频输出
++    plPlayerController.pause();
++    ExternalDisplayService.load({
++      'video': video,
++      'extras': {...plPlayerController.buffer},
++      'position': _extLastPositionMs,
++      'rate': plPlayerController.playbackSpeed,
++    });
++    // 重新拉流耗时可能超过旧看门狗窗口，重置计时
++    ExternalDisplayService.startWatchdog();
++    // 收起键盘/输入焦点，防止残留焦点干扰遥控面板
++    FocusManager.instance.primaryFocus?.unfocus();
++  }
++
++  /// 本页的投屏会话被新页面接管：静默退出投屏态，不主动断开连接
++  void _onSessionStolen() {
++    _extEventSub?.cancel();
++    _extEventSub = null;
++    isExternalMode.value = false;
++    _externalOnly = false;
++    _extLoadedUrl = null;
++  }
++
++  void _onExternalEvent(Map<String, dynamic> event) {
++    final ev = event['event'];
++    final ed = event['data'];
++    final ePos = (ev == 'state' && ed is Map) ? ed['position'] : null;
++    switch (event['event']) {
++      case 'state':
++        final data = Map<String, dynamic>.from(event['data'] as Map? ?? {});
++        _extLastPositionMs = (data['position'] as num?)?.toInt()
++            ?? _extLastPositionMs;
++        break;
++      case 'playbackError':
++        final data = Map<String, dynamic>.from(event['data'] as Map? ?? {});
++        SmartDialog.showToast('外接屏播放出错：${data['error'] ?? '未知'}');
++        if (isExternalMode.value) backToLocal();
++        break;
++      case 'dismissed':
++        // 拔线 / 投屏断开 / 副屏引擎死掉：处于投屏态的页面自动回本机续播。
++        // 任何时刻至多一个页面处于投屏态（接管时旧属主会被置为 false），
++        // 故此处无需再判断属主。
++        if (isExternalMode.value) {
++          backToLocal();
++        }
++        break;
++    }
++  }
++
++  /// 回到本机播放：取副屏进度，断开外接屏，本机续播
++  Future<void> backToLocal({bool resume = true}) async {
++    if (_backToLocalBusy) return;
++    if (!isExternalMode.value && !ExternalDisplayService.isConnected) {
++      return;
++    }
++    _backToLocalBusy = true;
++    try {
++      // 必须先取消事件订阅再做 disconnect：原生 Presentation 关闭时会回调
++      // presentationDismissed，若订阅仍在会被自己触发二次 backToLocal，
++      // 在页面销毁过程中误拉起本机播放，把全局播放器搞成中间态。
++      _extEventSub?.cancel();
++      _extEventSub = null;
++      // 收起残留的输入焦点/键盘，避免切回瞬间弹出输入法
++      FocusManager.instance.primaryFocus?.unfocus();
++      final pos = _extLastPositionMs;
++      if (ExternalDisplayService.isConnected) {
++        // === 关键时序（2026-10-16 v7）===
++        // 必须让副屏「先停播 → 再摘掉视频输出(Surface)」并回执 disposeDone，
++        // 主屏收到回执后才关闭 Presentation。
++        // 反过来的话 Surface 会先随 Presentation 销毁，而 mpv 仍在用它渲染，
++        // 导致 mpv 核心线程卡死；media-kit 在 dispose 后 5 秒执行的
++        // mpv_terminate_destroy() 就会永久阻塞（libmpv 内 pthread_cond_wait），
++        // 表现为退出投屏后点任何视频都黑屏 + 控制组件消失 + 整机 ANR。
++        final done = ExternalDisplayService.armExternalDispose();
++        ExternalDisplayService.sendToExternal('dispose', null);
++        try {
++          await done.timeout(const Duration(milliseconds: 2500));
++        } catch (_) {
++          // 超时兜底：副屏没回执也要继续，避免本机卡住
++        }
++        // 留一小段缓冲，让副屏完成最后一帧回收
++        await Future<void>.delayed(const Duration(milliseconds: 250));
++        // 本机播放器先静音停播，确保其 mpv 空闲，避免随后 dispose 时收尾阻塞
++        try {
++          await plPlayerController.pause(notify: false);
++        } catch (_) {}
++        await ExternalDisplayService.disconnect();
++      }
++      ExternalDisplayService.clearOwner(this);
++      isExternalMode.value = false;
++      _extLoadedUrl = null;
++      if (!resume) {
++        _externalOnly = false;
++        return;
++      }
++      if (_externalOnly) {
++        // 投屏时本机跳过了 setDataSource，没有该视频的播放源：
++        // 关闭投屏后重新拉流并定位到副屏进度，避免续播到上一个视频
++        _externalOnly = false;
++        defaultST = pos > 0 ? Duration(milliseconds: pos) : null;
++        await playerInit(autoplay: true);
++        return;
++      }
++      // 无论进度是否为 0 都必须恢复播放，否则会卡在黑屏暂停态
++      if (pos > 0) {
++        await plPlayerController.seekTo(Duration(milliseconds: pos));
++      }
++      plPlayerController.play();
++    } finally {
++      _backToLocalBusy = false;
++    }
++  }
++
+   void onClose() {
++    if (isExternalMode.value) {
++      backToLocal(resume: false);
++    }
+     cid.close();
+     if (isFileSource) {
+       cacheLocalProgress();
+diff --git a/lib/pages/video/view.dart b/lib/pages/video/view.dart
+index f0680dce1..721994f6d 100644
+--- a/lib/pages/video/view.dart
++++ b/lib/pages/video/view.dart
+@@ -41,6 +41,7 @@ import 'package:PiliPlus/pages/video/introduction/ugc/widgets/page.dart';
+ import 'package:PiliPlus/pages/video/introduction/ugc/widgets/season.dart'
+     as ugc;
+ import 'package:PiliPlus/pages/video/member/controller.dart';
++import 'package:PiliPlus/pages/video/external_display/remote_panel.dart';
+ import 'package:PiliPlus/pages/video/member/view.dart';
+ import 'package:PiliPlus/pages/video/related/view.dart';
+ import 'package:PiliPlus/pages/video/reply/controller.dart';
+@@ -546,6 +547,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
+                         videoDetailController.isCollapsing
+                   ? videoDetailController.animHeight
+                   : videoDetailController.isCollapsing ||
++                        videoDetailController.isExternalMode.value ||
+                         (plPlayerController?.playerStatus.isPlaying ?? false)
+                   ? videoDetailController.minVideoHeight
+                   : kToolbarHeight;
+@@ -722,6 +724,10 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
+   Widget _buildHeaderOverlay() {
+     return Obx(
+       () {
++        // 外接屏模式：遥控面板自身拦截所有点击，不能让悬浮工具栏盖在上面吃掉触摸
++        if (videoDetailController.isExternalMode.value) {
++          return const SizedBox.shrink();
++        }
+         final scrollRatio = videoDetailController.scrollRatio.value;
+         if (scrollRatio == 0) {
+           return const SizedBox.shrink();
+@@ -1220,9 +1226,16 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
+         videoDetailController.plPlayerController.onPopInvokedWithResult,
+     child: Obx(
+       () =>
+-          !videoDetailController.videoState.value ||
+-              !videoDetailController.autoPlay ||
+-              plPlayerController?.videoController == null
++          // 外接屏模式下面板无条件渲染：即使视频尚未起播（videoState=false）
++          // 也要显示遥控器，否则主屏只剩一片黑（真机 v4 反馈的黑屏根因）
++          videoDetailController.isExternalMode.value
++          ? ExternalRemotePanel(
++              title: '',
++              onBackToLocal: videoDetailController.backToLocal,
++            )
++          : !videoDetailController.videoState.value ||
++                !videoDetailController.autoPlay ||
++                plPlayerController?.videoController == null
+           ? const SizedBox.shrink()
+           : PLVideoPlayer(
+               maxWidth: width,
+diff --git a/lib/pages/video/widgets/header_control.dart b/lib/pages/video/widgets/header_control.dart
+index a9bae79b5..78018a316 100644
+--- a/lib/pages/video/widgets/header_control.dart
++++ b/lib/pages/video/widgets/header_control.dart
+@@ -423,6 +423,16 @@ class HeaderControlState extends State<HeaderControl>
+                     leading: const Icon(Icons.image_outlined, size: 20),
+                     title: const Text('保存封面', style: titleStyle),
+                   ),
++                if (!isFileSource && PlatformUtils.isMobile)
++                  ListTile(
++                    dense: true,
++                    onTap: () {
++                      Get.back();
++                      videoDetailCtr.openOnExternalDisplay();
++                    },
++                    leading: const Icon(Icons.connected_tv, size: 20),
++                    title: const Text('在外接显示器播放', style: titleStyle),
++                  ),
+                 ListTile(
+                   dense: true,
+                   onTap: () {
+diff --git a/lib/utils/update.dart b/lib/utils/update.dart
+index 772963116..f6b72814a 100644
+--- a/lib/utils/update.dart
++++ b/lib/utils/update.dart
+@@ -1,4 +1,4 @@
+-import 'dart:io' show Platform;
++import 'dart:io' show File, Platform;
+ 
+ import 'package:PiliPlus/build_config.dart';
+ import 'package:PiliPlus/common/constants.dart';
+@@ -9,17 +9,25 @@ import 'package:PiliPlus/utils/accounts/account.dart';
+ import 'package:PiliPlus/utils/page_utils.dart';
+ import 'package:PiliPlus/utils/storage.dart';
+ import 'package:PiliPlus/utils/storage_key.dart';
++import 'package:crypto/crypto.dart' as crypto;
+ import 'package:device_info_plus/device_info_plus.dart';
+ import 'package:dio/dio.dart';
+ import 'package:flutter/foundation.dart' show kDebugMode;
++import 'package:flutter/services.dart' show MethodChannel;
+ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
+ import 'package:material_ui/material_ui.dart';
++import 'package:path_provider/path_provider.dart';
+ 
+ abstract final class Update {
+   // 检查更新
+   static Future<void> checkUpdate([bool isAuto = true]) async {
+     if (kDebugMode) return;
+     SmartDialog.dismiss();
++    // 外接屏定制版：Android 走自建更新清单（EXT_UPDATES_URL 可编译时注入，
++    // 默认为 GitHub Releases 侧的 updates.json），其余平台保留官方 GitHub 逻辑
++    if (Platform.isAndroid) {
++      return _checkExtscreenUpdate(isAuto);
++    }
+     try {
+       final res = await Request().get(
+         Api.latestApp,
+@@ -115,7 +123,136 @@ abstract final class Update {
+     }
+   }
+ 
+-  // 下载适用于当前系统的安装包
++  // ===== 以下为外接屏定制版（Android）应用内更新 =====
++
++  static Future<void> _checkExtscreenUpdate(bool isAuto) async {
++    try {
++      final res = await Request().get(
++        Api.extscreenUpdateUrl,
++        options: Options(extra: {'account': const NoAccount()}),
++      );
++      if (res.data is! Map || (res.data as Map).isEmpty) {
++        if (!isAuto) SmartDialog.showToast('检查更新失败，更新服务未返回数据');
++        return;
++      }
++      final data = res.data as Map;
++      final int latest = data['versionCode'] as int? ?? 0;
++      if (latest <= BuildConfig.versionCode) {
++        if (!isAuto) SmartDialog.showToast('已是最新版本');
++        return;
++      }
++      SmartDialog.show(
++        tag: 'ext_update',
++        animationType: SmartAnimationType.centerFade_otherSlide,
++        builder: (context) {
++          final colorScheme = ColorScheme.of(context);
++          return AlertDialog(
++            title: const Text('🎉 发现新版本 '),
++            content: SizedBox(
++              width: 320,
++              child: SingleChildScrollView(
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    Text(
++                      '${data['version']}',
++                      style: const TextStyle(fontSize: 20),
++                    ),
++                    const SizedBox(height: 8),
++                    Text('${data['notes'] ?? ''}'),
++                  ],
++                ),
++              ),
++            ),
++            actions: [
++              TextButton(
++                onPressed: SmartDialog.dismiss,
++                child: Text(
++                  '取消',
++                  style: TextStyle(color: colorScheme.outline),
++                ),
++              ),
++              TextButton(
++                onPressed: () => _downloadAndInstall(data),
++                child: const Text('下载并安装'),
++              ),
++            ],
++          );
++        },
++      );
++    } catch (e) {
++      if (kDebugMode) debugPrint('extscreen check update error: $e');
++      if (!isAuto) SmartDialog.showToast('检查更新失败，请检查网络');
++    }
++  }
++
++  static Future<void> _downloadAndInstall(Map data) async {
++    SmartDialog.dismiss(tag: 'ext_update');
++    final progress = ValueNotifier<double?>(null);
++    SmartDialog.show(
++      tag: 'ext_progress',
++      builder: (context) => ValueListenableBuilder<double?>(
++        valueListenable: progress,
++        builder: (context, value, _) {
++          final pct = value == null
++              ? null
++              : (value * 100).toStringAsFixed(1);
++          return AlertDialog(
++            title: const Text('正在下载更新'),
++            content: Column(
++              mainAxisSize: MainAxisSize.min,
++              children: [
++                LinearProgressIndicator(value: value),
++                const SizedBox(height: 12),
++                Text(pct == null ? '准备中…' : '$pct %'),
++              ],
++            ),
++          );
++        },
++      ),
++    );
++    File? apk;
++    try {
++      final dir = await getTemporaryDirectory();
++      final path = '${dir.path}/extscreen_update.apk';
++      apk = File(path);
++      if (apk.existsSync()) apk.deleteSync();
++      await Dio().download(
++        data['url'] as String,
++        path,
++        options: Options(
++          headers: {'user-agent': BrowserUa.mob},
++          receiveTimeout: const Duration(minutes: 10),
++        ),
++        onReceiveProgress: (count, total) {
++          if (total > 0) progress.value = count / total;
++        },
++      );
++      // SHA256 逐字节校验，不匹配拒绝安装
++      final expected = (data['sha256'] as String? ?? '').toLowerCase();
++      if (expected.isNotEmpty) {
++        final digest = await crypto.sha256
++            .bind(apk.openRead())
++            .fold<crypto.Digest>(
++              crypto.Digest([]),
++              (acc, chunk) => crypto.Digest(acc.bytes + chunk.bytes),
++            );
++        if (digest.toString() != expected) {
++          throw Exception('SHA256 校验失败，安装包可能损坏，已取消安装');
++        }
++      }
++      SmartDialog.dismiss(tag: 'ext_progress');
++      await const MethodChannel('piliplus/update_installer')
++          .invokeMethod('install', {'path': path});
++    } catch (e) {
++      SmartDialog.dismiss(tag: 'ext_progress');
++      if (apk != null && apk.existsSync()) apk.deleteSync();
++      SmartDialog.showToast('更新失败: $e');
++      if (kDebugMode) debugPrint('extscreen update error: $e');
++    }
++  }
++
++  // 下载适用于当前系统的安装包（非 Android 平台，官方逻辑）
+   static Future<void> onDownload(Map data, {String? ext}) async {
+     SmartDialog.dismiss();
+     try {
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 4d0eeaf3a..9a217d312 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -17,7 +17,7 @@ publish_to: "none" # Remove this line if you wish to publish to pub.dev
+ # In Windows, build-name is used as the major, minor, and patch parts
+ # of the product and file versions while build-number is used as the build suffix.
+ # update when release
+-version: 2.1.6+1
++version: 2.1.6-ext.19+5493
+ 
+ environment:
+   sdk: ">=3.13.0"
+@@ -185,11 +185,12 @@ dependency_overrides:
+       url: https://github.com/bggRGjQaUbCoE/flutter_inappwebview.git
+       path: flutter_inappwebview_windows
+       ref: v6.1.5
++  # media_kit 改为本地 vendored 版本：仅打了一个「外接屏 isolate 改用独立事件循环」
++  # 的钩子补丁（见 third_party/media_kit/lib/src/player/native/core/initializer.dart）。
++  # 原生事件循环的 wakeup 端口是进程级全局，副屏引擎会覆盖它，导致主播放器
++  # 所有命令永不返回 → dispose 时 mpv_terminate_destroy 永久阻塞 → ANR。
+   media_kit:
+-    git:
+-      url: https://github.com/My-Responsitories/media-kit.git
+-      path: media_kit
+-      ref: native
++    path: third_party/media_kit
+   media_kit_libs_android_video:
+     git:
+       url: https://github.com/My-Responsitories/media-kit.git

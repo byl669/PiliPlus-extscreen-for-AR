@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用内更新：允许 FileProvider 共享 APK 给系统安装器（update/ 目录 + cache 整目录） -->
+<paths>
+    <files-path name="update_int" path="update/" />
+    <external-files-path name="update_ext" path="update/" />
+    <cache-path name="update_cache" path="." />
+</paths>
