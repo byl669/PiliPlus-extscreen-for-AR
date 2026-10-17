@@ -1,7 +1,7 @@
 {
-  "version": "2.1.6.2-ext.19",
-  "versionCode": 5493,
+  "version": "2.1.6-ext.20",
+  "versionCode": 5494,
   "url": "https://github.com/byl669/PiliPlus-extscreen-for-AR/releases/latest/download/PiliPlus-extscreen_arm64.apk",
-  "sha256": "10db0b8f75276a55bdeaebdc02cbd76fbe11921f09294f33129b5111d8ce4096",
-  "notes": "外接屏定制版 2.1.6.2-ext.19（首次 CI 构建后会自动更新此文件）"
+  "sha256": "37d5636a2e4c8f42cb8a3be97b7d3f3ac94ae397f9b8573ec34f92faee446804",
+  "notes": "基于官方 2.1.6.2 自动追加外接显示器播放功能（CI 构建）"
 }
