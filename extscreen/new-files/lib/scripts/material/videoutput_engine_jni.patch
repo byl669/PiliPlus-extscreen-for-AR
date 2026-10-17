@@ -1,8 +1,7 @@
-diff --git a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java
-index de6eb446..05e29b16 100644
---- a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java
-+++ b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java
-@@ -28,6 +28,9 @@ import io.flutter.view.TextureRegistry;
+diff -ruN a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java
+--- a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java	2026-10-17 23:36:50
++++ b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/MediaKitVideoPlugin.java	2026-10-17 23:37:04
+@@ -28,6 +28,9 @@
   */
  public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, ActivityAware {
      public static Activity activity;
@@ -12,7 +11,7 @@ index de6eb446..05e29b16 100644
      private MethodChannel channel;
      private TextureRegistry textureRegistry;
      private VideoOutputManager videoOutputManager;
-@@ -40,7 +43,7 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
+@@ -40,7 +43,7 @@
  
              if (videoOutputManager == null) {
                  if (MediaKitVideoPlugin.activity != null && channel != null && textureRegistry != null) {
@@ -21,7 +20,7 @@ index de6eb446..05e29b16 100644
                      lock.notifyAll();
                  }
              }
-@@ -54,7 +57,7 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
+@@ -54,7 +57,7 @@
  
              if (videoOutputManager == null) {
                  if (MediaKitVideoPlugin.activity != null && channel != null && textureRegistry != null) {
@@ -30,7 +29,7 @@ index de6eb446..05e29b16 100644
                      lock.notifyAll();
                  }
              }
-@@ -72,6 +75,7 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
+@@ -72,6 +75,7 @@
      @Override
      public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
          synchronized (lock) {
@@ -38,7 +37,7 @@ index de6eb446..05e29b16 100644
              channel = new MethodChannel(flutterPluginBinding.getBinaryMessenger(), "com.alexmercerind/media_kit_video");
              textureRegistry = flutterPluginBinding.getTextureRegistry();
  
-@@ -79,7 +83,7 @@ public class MediaKitVideoPlugin implements FlutterPlugin, MethodCallHandler, Ac
+@@ -79,7 +83,7 @@
  
              if (videoOutputManager == null) {
                  if (MediaKitVideoPlugin.activity != null && channel != null && textureRegistry != null) {
@@ -47,11 +46,10 @@ index de6eb446..05e29b16 100644
                      lock.notifyAll();
                  }
              }
-diff --git a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java
-index c5e28b3e..f49c991f 100644
---- a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java
-+++ b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java
-@@ -47,13 +47,18 @@ public class VideoOutput {
+diff -ruN a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java
+--- a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java	2026-10-17 23:36:50
++++ b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutput.java	2026-10-17 23:37:04
+@@ -47,13 +47,18 @@
      private long handle;
      private MethodChannel channelReference;
      private TextureRegistry textureRegistryReference;
@@ -71,7 +69,7 @@ index c5e28b3e..f49c991f 100644
          try {
              flutterJNIAPIAvailable = false;
              waitUntilFirstFrameRenderedNotify = false;
-@@ -94,9 +99,8 @@ public class VideoOutput {
+@@ -94,9 +99,8 @@
                                  Log.i("media_kit", String.format(Locale.ENGLISH, "VideoOutput.WaitUntilFirstFrameRenderedNotify = %d", handle));
                              }
  
@@ -83,7 +81,7 @@ index c5e28b3e..f49c991f 100644
                                  flutterJNI.markTextureFrameAvailable(id);
                              }
                          } catch (Throwable e) {
-@@ -116,9 +120,8 @@ public class VideoOutput {
+@@ -116,9 +120,8 @@
                                  Log.i("media_kit", String.format(Locale.ENGLISH, "VideoOutput.WaitUntilFirstFrameRenderedNotify = %d", handle));
                              }
  
@@ -95,7 +93,7 @@ index c5e28b3e..f49c991f 100644
                                  flutterJNI.markTextureFrameAvailable(id);
                              }
                          } catch (Throwable e) {
-@@ -219,6 +222,19 @@ public class VideoOutput {
+@@ -219,6 +222,19 @@
      }
  
      private FlutterJNI getFlutterJNIReference() {
@@ -115,11 +113,10 @@ index c5e28b3e..f49c991f 100644
          try {
              FlutterView view = null;
              // io.flutter.embedding.android.FlutterActivity
-diff --git a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java
-index 7799cfe8..171753de 100644
---- a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java
-+++ b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java
-@@ -20,18 +20,20 @@ public class VideoOutputManager {
+diff -ruN a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java
+--- a/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java	2026-10-17 23:36:50
++++ b/media_kit_video/android/src/main/java/com/alexmercerind/media_kit_video/VideoOutputManager.java	2026-10-17 23:37:05
+@@ -20,18 +20,20 @@
      private final HashMap<Long, VideoOutput> videoOutputs = new HashMap<>();
      private final MethodChannel channelReference;
      private final TextureRegistry textureRegistryReference;
