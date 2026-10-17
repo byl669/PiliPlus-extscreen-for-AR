@@ -68,13 +68,13 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: 安装 Flutter 3.47.7
+      - name: 安装 Flutter 3.47.7（禁用缓存：缓存会保留已打补丁的 SDK，导致补丁重复应用）
         if: steps.check.outputs.skip != 'true'
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.47.7'
           channel: stable
-          cache: true
+          cache: false
 
       - name: 应用官方 Flutter SDK / material_ui 补丁（幂等 forward）
         if: steps.check.outputs.skip != 'true'
@@ -85,6 +85,9 @@ jobs:
             (cd "$FLUTTER_ROOT" && patch -p1 --forward --fuzz=3 --no-backup-if-mismatch < "$OLDPWD/$f") \
               || echo "  skip: $(basename $f)"
           done
+          # 断言：关键补丁恰好应用一次（防重复声明导致编译失败）
+          CNT=$(grep -c "computeToPlainTextV2" "$FLUTTER_ROOT/packages/flutter/lib/src/painting/text_span.dart" || true)
+          if [ "$CNT" != "1" ]; then echo "❌ text_span.dart computeToPlainTextV2 出现 $CNT 次（应为 1），SDK 补丁异常"; exit 1; fi
           flutter pub get >/dev/null
           MUI_DIR=$(ls -d "$PUB_CACHE"/hosted/pub.dev/material_ui-* | tail -1)
           echo "material_ui: $MUI_DIR"
